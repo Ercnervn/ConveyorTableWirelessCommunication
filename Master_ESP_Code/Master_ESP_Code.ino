@@ -1,107 +1,107 @@
-// Haberleşme Kütüphaneleri
+// Communication libraries
 #include <esp_now.h>
 #include <WiFi.h>
 
-// ADC Modül Kütüphanesi
+// ADC module library
 #include "Protocentral_ADS1220.h"
 #include <SPI.h>
 
-// ADC Modül için tanımlamalar
-#define PGA          1           // Programlanabilir Kazanç = 1
-#define VREF         2.048      // Dahili Referans Voltajı  2.048V
-#define VFSR         VREF/PGA
-#define FULL_SCALE   (((long int)1<<23)-1)
+// Definitions for ADC module
+#define PGA            1           // Programmable Gain Amplifier = 1
+#define VREF           2.048       // Internal reference voltage = 2.048V
+#define VFSR           VREF/PGA    // Full-scale voltage reference
+#define FULL_SCALE     (((long int)1<<23)-1)  // ADC full-scale count (2^23 - 1)
 
-#define ADS1220_CS_PIN   5  // Chip Select Pini
-#define ADS1220_DRDY_PIN  4 // Veri hazır Pini
+#define ADS1220_CS_PIN    5  // Chip Select pin for ADC
+#define ADS1220_DRDY_PIN  4  // Data Ready pin for ADC
 
-// İLERİ GERİ START için Pin tanımlamaları
+// Pins for forward/backward start signals
 const int ILERI_START = 32;
-const int GERI_START = 33;  
+const int GERI_START  = 33;
 
 Protocentral_ADS1220 pc_ads1220;
 int32_t adc_data;
 
+// Broadcast address for ESP-NOW
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// Gönderilen Verinin Yapısı (Alıcı Veri yapısı ile aynı olmalıdır!)
+// Structure of data to send (must match receiver's structure)
 typedef struct struct_message {
-   int id; // Sunucu Kart ID'si her sunucu için farklı olmalıdır!
-   int Potdeger; // Okunan Analog değer için tanımlanan değişken 
-   int iStart;
-   int gStart;
+   int id;         // Server card ID; unique for each server
+   int Potdeger;   // Measured analog value
+   int iStart;     // Forward start flag
+   int gStart;     // Backward start flag
 } struct_message;
 
-// myData adında bir struct_message oluşturuyoruz
 struct_message myData;
-
 esp_now_peer_info_t peerInfo;
 
+// Callback after data is sent
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  // Serial.print("\r\nSon Paket Durumu:\t");
-  // Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Gönderim Başarılı" : "Gönderim Başarılı olmadı");
+  // You can print send status here if needed
 }
 
 void setup() {
-    Serial.begin(115200); // Seri Port'u aktif eder
-    WiFi.mode(WIFI_STA); // Karta bulunan WiFi modülün rolünü belirler
+    Serial.begin(115200);               // Initialize serial port
+    WiFi.mode(WIFI_STA);                // Set WiFi to station mode
 
     pinMode(ILERI_START, INPUT);
     pinMode(GERI_START, INPUT);
     
-    // Haberleşme Protokolünü başlatır
-    if (esp_now_init() != ESP_OK) {  
-        // Serial.println("ESP-NOW Baslatilamadi");
+    // Initialize ESP-NOW
+    if (esp_now_init() != ESP_OK) {
         return;
     }
-    pc_ads1220.begin(ADS1220_CS_PIN, ADS1220_DRDY_PIN);  // ADC Kartın kütüphanesini başlatır
-    pc_ads1220.set_data_rate(DR_600SPS);   // Örnekleme hızını belirler
-    pc_ads1220.set_pga_gain(PGA_GAIN_1);   // Kazancı belirler
-    pc_ads1220.set_conv_mode_single_shot(); // Tek Kanal Analog değer okumak için yazılır
+
+    // Initialize ADC module
+    pc_ads1220.begin(ADS1220_CS_PIN, ADS1220_DRDY_PIN);
+    pc_ads1220.set_data_rate(DR_600SPS);          // Set sampling rate
+    pc_ads1220.set_pga_gain(PGA_GAIN_1);          // Set PGA gain
+    pc_ads1220.set_conv_mode_single_shot();       // Single-shot conversion mode
 
     esp_now_register_send_cb(OnDataSent);
 
+    // Configure peer for broadcasting
     memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-    peerInfo.channel = 0;  
+    peerInfo.channel = 0;
     peerInfo.encrypt = false;
   
-    // Eşleşme Ekler     
+    // Add peer
     if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-        // Serial.println("Eşleşme Başarısız");
         return;
     }
 }
 
 void loop() {
+    // Read single-ended ADC channel 0
     adc_data = pc_ads1220.Read_SingleShot_SingleEnded_WaitForData(MUX_SE_CH0);
 
-    int x = convertToMilliV(adc_data) * 2; // 2V'a kadar okunan değeri 12 bit değerine eşitlemek için okunan data float'tan int'a dönüştürülüp 2 ile çarpılmıştır. Bu değer X adında bir değişkene atanmıştır.
+    // Convert raw ADC data to millivolts and scale for 12-bit range
+    int x = convertToMilliV(adc_data) * 2;
     Serial.println(x);
-    myData.id = 2;   // Master Kimlik bilgisi
-    myData.Potdeger = x;  // Gönderilecek değer
 
-    int ILERI = digitalRead(ILERI_START);  
-    if (ILERI == HIGH) {
-        myData.iStart = 255;
-        // Serial.println("İleri Start Geldi");
+    myData.id       = 2;    // Master ID
+    myData.Potdeger = x;    // Value to send
+
+    // Read forward start signal
+    if (digitalRead(ILERI_START) == HIGH) {
+        myData.iStart = 255;    // Active
     } else {
-        myData.iStart = 0;
-        // Serial.println("İleri Start Gelmiyor");
+        myData.iStart = 0;      // Inactive
     }
 
-    int GERI = digitalRead(GERI_START);
-    if (GERI == HIGH) {
-        myData.gStart = 255;
-        // Serial.println("Geri Start Geldi");
+    // Read backward start signal
+    if (digitalRead(GERI_START) == HIGH) {
+        myData.gStart = 255;    // Active
     } else {
-        myData.gStart = 0;
-        // Serial.println("Geri Start Gelmiyor");  
+        myData.gStart = 0;      // Inactive
     }
 
-    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
+    // Send data via ESP-NOW
+    esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
 }
 
-// Modülden okunan float değeri bir int olarak dönüştürür
-int convertToMilliV(int32_t i32data) {
-    return (int)((i32data * VREF * 1000) / FULL_SCALE);
+// Convert ADC reading to millivolts (integer)
+int convertToMilliV(int32_t raw) {
+    return (int)((raw * VREF * 1000) / FULL_SCALE);
 }
